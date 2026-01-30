@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
 """
-Polymarket Signal Generator for Secondary Market Investment
+Polymarket Signal Generator for US Equity Trading
+v2.1 - Track specific events + keyword matching
 """
 
 import json
 import requests
-from datetime import datetime, timedelta
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 import sqlite3
-import re
 
 BASE_DIR = Path(__file__).parent
 CONFIG_PATH = BASE_DIR / "config.json"
@@ -19,303 +19,223 @@ HISTORY_PATH = BASE_DIR / "data" / "history"
 API_BASE = "https://gamma-api.polymarket.com"
 
 def load_config() -> dict:
-    """Load configuration file"""
     with open(CONFIG_PATH) as f:
         return json.load(f)
 
 def init_db():
-    """Initialize SQLite database for historical tracking"""
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     HISTORY_PATH.mkdir(parents=True, exist_ok=True)
     
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    
     c.execute('''CREATE TABLE IF NOT EXISTS market_snapshots (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         market_id TEXT NOT NULL,
         question TEXT NOT NULL,
         category TEXT,
         yes_price REAL,
-        no_price REAL,
         volume_24h REAL,
-        volume_total REAL,
-        timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
-        UNIQUE(market_id, timestamp)
-    )''')
-    
-    c.execute('''CREATE TABLE IF NOT EXISTS alerts (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        market_id TEXT NOT NULL,
-        question TEXT NOT NULL,
-        change_type TEXT,
-        old_price REAL,
-        new_price REAL,
-        change_pct REAL,
-        stocks_affected TEXT,
         timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
     )''')
-    
-    c.execute('''CREATE INDEX IF NOT EXISTS idx_market_time 
-                 ON market_snapshots(market_id, timestamp)''')
-    
     conn.commit()
     conn.close()
 
-def fetch_markets(limit: int = 200, active_only: bool = True) -> List[dict]:
-    """Fetch active markets from Polymarket API"""
-    params = {
-        "limit": limit,
-        "active": str(active_only).lower(),
-        "closed": "false"
-    }
+def fetch_tracked_events(config: dict) -> List[dict]:
+    """Fetch specific tracked events by slug"""
+    results = []
+    
+    for event_config in config.get("tracked_events", []):
+        slug = event_config["slug"]
+        try:
+            resp = requests.get(f"{API_BASE}/events?slug={slug}", timeout=30)
+            resp.raise_for_status()
+            data = resp.json()
+            
+            if data and len(data) > 0:
+                event = data[0]
+                # Get top markets from this event
+                markets = event.get("markets", [])
+                
+                # Sort by price (highest probability first)
+                for market in markets[:5]:  # Top 5 outcomes
+                    try:
+                        prices = json.loads(market.get("outcomePrices", "[]"))
+                        yes_price = float(prices[0]) if prices else 0
+                    except:
+                        yes_price = 0
+                    
+                    if yes_price > 0.001:  # Skip near-zero outcomes
+                        results.append({
+                            "id": market.get("id"),
+                            "event_name": event_config["name"],
+                            "question": market.get("groupItemTitle") or market.get("question", "")[:50],
+                            "category": event_config["name"],
+                            "stocks": event_config.get("stocks", []),
+                            "notes": event_config.get("notes", ""),
+                            "current_prob": round(yes_price * 100, 1),
+                            "day_change": round((market.get("oneDayPriceChange") or 0) * 100, 2),
+                            "week_change": round((market.get("oneWeekPriceChange") or 0) * 100, 2),
+                            "volume_24h": market.get("volume24hr", 0) or 0,
+                            "slug": market.get("slug"),
+                        })
+        except Exception as e:
+            print(f"Error fetching {slug}: {e}")
+    
+    return results
+
+def fetch_keyword_markets(config: dict) -> List[dict]:
+    """Fetch markets matching keywords"""
+    results = []
     
     try:
-        resp = requests.get(f"{API_BASE}/markets", params=params, timeout=30)
+        resp = requests.get(f"{API_BASE}/markets?limit=300&active=true&closed=false", timeout=30)
         resp.raise_for_status()
-        return resp.json()
+        markets = resp.json()
     except Exception as e:
         print(f"Error fetching markets: {e}")
-        return []
-
-def categorize_market(question: str, description: str, config: dict) -> Tuple[Optional[str], List[str]]:
-    """
-    Categorize a market based on keywords and return relevant stocks
-    Returns: (category_name, list_of_affected_stocks)
-    """
-    text = f"{question} {description}".lower()
+        return results
     
-    for category, cat_config in config["watchlist"].items():
-        keywords = cat_config.get("keywords", [])
-        for keyword in keywords:
-            if keyword.lower() in text:
-                # Collect all potentially affected stocks
-                stocks = []
-                impact = cat_config.get("stock_impact", {})
-                for key, value in impact.items():
-                    if isinstance(value, list):
-                        stocks.extend(value)
-                return category, list(set(stocks))
-    
-    return None, []
-
-def filter_relevant_markets(markets: List[dict], config: dict) -> List[dict]:
-    """Filter markets relevant to US equity investment"""
-    relevant = []
+    exclude_keywords = [kw.lower() for kw in config.get("exclude_keywords", [])]
     
     for market in markets:
         question = market.get("question", "")
-        description = market.get("description", "")
-        volume_24h = market.get("volume24hr", 0) or 0
+        text = question.lower()
         
-        # Skip low volume markets
-        if volume_24h < config["alert_thresholds"]["min_volume_24h"]:
+        # Check exclusions
+        if any(ex in text for ex in exclude_keywords):
             continue
         
-        category, stocks = categorize_market(question, description, config)
+        # Check volume
+        volume_24h = market.get("volume24hr", 0) or 0
+        if volume_24h < config.get("alert_thresholds", {}).get("min_volume_24h", 10000):
+            continue
         
-        if category:
-            market["_category"] = category
-            market["_affected_stocks"] = stocks
-            relevant.append(market)
+        # Match keywords
+        for cat_name, cat_config in config.get("keyword_watchlist", {}).items():
+            keywords = cat_config.get("keywords", [])
+            
+            for keyword in keywords:
+                if keyword.lower() in text:
+                    try:
+                        prices = json.loads(market.get("outcomePrices", "[]"))
+                        yes_price = float(prices[0]) if prices else 0
+                    except:
+                        yes_price = 0
+                    
+                    results.append({
+                        "id": market.get("id"),
+                        "event_name": cat_name,
+                        "question": question[:60],
+                        "category": cat_name,
+                        "stocks": cat_config.get("stocks", []),
+                        "current_prob": round(yes_price * 100, 1),
+                        "day_change": round((market.get("oneDayPriceChange") or 0) * 100, 2),
+                        "week_change": round((market.get("oneWeekPriceChange") or 0) * 100, 2),
+                        "volume_24h": volume_24h,
+                        "slug": market.get("slug"),
+                    })
+                    break
+            else:
+                continue
+            break
     
-    return relevant
+    return results
 
-def calculate_signals(markets: List[dict], config: dict) -> dict:
-    """
-    Calculate trading signals from market data
-    Returns structured signal data
-    """
-    major_threshold = config["alert_thresholds"]["major_change"]
-    notable_threshold = config["alert_thresholds"]["notable_change"]
+def generate_report(config: dict) -> str:
+    """Generate the daily signal report"""
+    init_db()
     
-    signals = {
-        "major": [],      # >5% change
-        "notable": [],    # 2-5% change
-        "stable": [],     # <2% change
-        "timestamp": datetime.utcnow().isoformat()
-    }
+    print("Fetching tracked events...")
+    tracked = fetch_tracked_events(config)
+    print(f"Found {len(tracked)} tracked market outcomes")
     
-    for market in markets:
-        # Parse outcome prices
-        try:
-            prices = json.loads(market.get("outcomePrices", "[]"))
-            yes_price = float(prices[0]) if prices else 0
-        except:
-            yes_price = 0
-        
-        # Get price changes
-        day_change = (market.get("oneDayPriceChange") or 0) * 100  # Convert to percentage
-        week_change = (market.get("oneWeekPriceChange") or 0) * 100
-        
-        signal = {
-            "id": market.get("id"),
-            "question": market.get("question"),
-            "category": market.get("_category"),
-            "affected_stocks": market.get("_affected_stocks", []),
-            "current_prob": round(yes_price * 100, 1),  # As percentage
-            "day_change": round(day_change, 2),
-            "week_change": round(week_change, 2),
-            "volume_24h": market.get("volume24hr", 0),
-            "volume_total": market.get("volumeNum", 0),
-            "slug": market.get("slug"),
-        }
-        
-        # Classify by magnitude of change
-        abs_change = abs(day_change)
+    print("Fetching keyword-matched markets...")
+    keyword_matched = fetch_keyword_markets(config)
+    print(f"Found {len(keyword_matched)} keyword-matched markets")
+    
+    # Combine and dedupe
+    all_markets = tracked + keyword_matched
+    seen_ids = set()
+    unique_markets = []
+    for m in all_markets:
+        if m["id"] not in seen_ids:
+            seen_ids.add(m["id"])
+            unique_markets.append(m)
+    
+    # Classify by change magnitude
+    major_threshold = config.get("alert_thresholds", {}).get("major_change", 5.0)
+    notable_threshold = config.get("alert_thresholds", {}).get("notable_change", 2.0)
+    
+    major = []
+    notable = []
+    stable = []
+    
+    for m in unique_markets:
+        abs_change = abs(m["day_change"])
         if abs_change >= major_threshold:
-            signals["major"].append(signal)
+            major.append(m)
         elif abs_change >= notable_threshold:
-            signals["notable"].append(signal)
+            notable.append(m)
         else:
-            signals["stable"].append(signal)
+            stable.append(m)
     
-    # Sort by absolute change magnitude
-    for key in ["major", "notable"]:
-        signals[key] = sorted(signals[key], key=lambda x: abs(x["day_change"]), reverse=True)
+    # Sort by change magnitude
+    major = sorted(major, key=lambda x: abs(x["day_change"]), reverse=True)
+    notable = sorted(notable, key=lambda x: abs(x["day_change"]), reverse=True)
+    stable = sorted(stable, key=lambda x: x["current_prob"], reverse=True)
     
-    return signals
-
-def format_signal_report(signals: dict, config: dict) -> str:
-    """Format signals into a readable Telegram message"""
+    # Format report
     lines = []
     now = datetime.now()
-    
-    lines.append(f"🎰 **Polymarket 每日信号** | {now.strftime('%Y-%m-%d')}")
+    lines.append(f"🎰 **Polymarket 信号** | {now.strftime('%Y-%m-%d %H:%M')}")
     lines.append("")
     
-    # Major changes
-    if signals["major"]:
-        lines.append("🔴 **重大变化 (>5% 概率变动)**")
-        for s in signals["major"][:5]:  # Top 5
-            direction = "📈" if s["day_change"] > 0 else "📉"
-            sign = "+" if s["day_change"] > 0 else ""
-            lines.append(f"{direction} **{s['question'][:60]}...**" if len(s['question']) > 60 else f"{direction} **{s['question']}**")
-            lines.append(f"   概率: {s['current_prob']}% ({sign}{s['day_change']}%)")
-            if s["affected_stocks"]:
-                lines.append(f"   关联股票: {', '.join(s['affected_stocks'][:5])}")
+    if major:
+        lines.append("🔴 **重大变化 (>5%)**")
+        for m in major[:5]:
+            sign = "+" if m["day_change"] > 0 else ""
+            emoji = "📈" if m["day_change"] > 0 else "📉"
+            lines.append(f"{emoji} **{m['event_name']}**: {m['question']}")
+            lines.append(f"   概率: {m['current_prob']}% ({sign}{m['day_change']}%)")
+            lines.append(f"   关联: {', '.join(m['stocks'][:4])}")
             lines.append("")
     else:
         lines.append("🔴 **重大变化**: 无")
         lines.append("")
     
-    # Notable changes
-    if signals["notable"]:
-        lines.append("🟡 **值得关注 (2-5% 变动)**")
-        for s in signals["notable"][:5]:  # Top 5
-            direction = "↑" if s["day_change"] > 0 else "↓"
-            sign = "+" if s["day_change"] > 0 else ""
-            lines.append(f"• {s['question'][:50]}...")
-            lines.append(f"  {s['current_prob']}% ({sign}{s['day_change']}%) | 股票: {', '.join(s['affected_stocks'][:3]) if s['affected_stocks'] else 'N/A'}")
+    if notable:
+        lines.append("🟡 **值得关注 (2-5%)**")
+        for m in notable[:5]:
+            sign = "+" if m["day_change"] > 0 else ""
+            lines.append(f"• {m['event_name']}: {m['question'][:40]}...")
+            lines.append(f"  {m['current_prob']}% ({sign}{m['day_change']}%) | {', '.join(m['stocks'][:3])}")
         lines.append("")
     
-    # Summary stats
-    total_tracked = len(signals["major"]) + len(signals["notable"]) + len(signals["stable"])
-    lines.append(f"📊 **追踪市场**: {total_tracked} | 重大变化: {len(signals['major'])} | 值得关注: {len(signals['notable'])}")
+    if stable:
+        lines.append("📊 **追踪中 (稳定)**")
+        for m in stable[:8]:
+            lines.append(f"• {m['event_name']}: {m['question'][:35]}... → {m['current_prob']}%")
+        lines.append("")
+    
+    lines.append(f"**总计**: {len(unique_markets)} 个市场 | 重大: {len(major)} | 关注: {len(notable)}")
+    
+    # Save to history
+    today = now.strftime("%Y-%m-%d")
+    signals = {
+        "major": major,
+        "notable": notable,
+        "stable": stable,
+        "timestamp": datetime.now(timezone.utc).isoformat()
+    }
+    with open(HISTORY_PATH / f"signals_{today}.json", "w") as f:
+        json.dump(signals, f, indent=2, ensure_ascii=False)
     
     return "\n".join(lines)
 
-def save_snapshot(markets: List[dict]):
-    """Save current market state to database"""
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    
-    for market in markets:
-        try:
-            prices = json.loads(market.get("outcomePrices", "[]"))
-            yes_price = float(prices[0]) if prices else 0
-            no_price = float(prices[1]) if len(prices) > 1 else 0
-        except:
-            yes_price, no_price = 0, 0
-        
-        c.execute('''INSERT OR IGNORE INTO market_snapshots 
-                     (market_id, question, category, yes_price, no_price, volume_24h, volume_total)
-                     VALUES (?, ?, ?, ?, ?, ?, ?)''',
-                  (market.get("id"), 
-                   market.get("question"),
-                   market.get("_category"),
-                   yes_price,
-                   no_price,
-                   market.get("volume24hr", 0),
-                   market.get("volumeNum", 0)))
-    
-    conn.commit()
-    conn.close()
-
-def get_historical_changes(market_id: str, days: int = 7) -> List[dict]:
-    """Get historical price data for a market"""
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    
-    cutoff = (datetime.utcnow() - timedelta(days=days)).isoformat()
-    
-    c.execute('''SELECT yes_price, timestamp FROM market_snapshots 
-                 WHERE market_id = ? AND timestamp > ?
-                 ORDER BY timestamp''', (market_id, cutoff))
-    
-    rows = c.fetchall()
-    conn.close()
-    
-    return [{"price": r[0], "timestamp": r[1]} for r in rows]
-
-def generate_daily_report() -> str:
-    """Main function to generate daily report"""
+def main():
     config = load_config()
-    init_db()
-    
-    # Fetch and process markets
-    print("Fetching markets from Polymarket...")
-    raw_markets = fetch_markets(limit=300)
-    print(f"Fetched {len(raw_markets)} markets")
-    
-    # Filter relevant ones
-    relevant = filter_relevant_markets(raw_markets, config)
-    print(f"Found {len(relevant)} relevant markets")
-    
-    # Save snapshot
-    save_snapshot(relevant)
-    
-    # Calculate signals
-    signals = calculate_signals(relevant, config)
-    
-    # Format report
-    report = format_signal_report(signals, config)
-    
-    # Also save JSON for analysis
-    today = datetime.now().strftime("%Y-%m-%d")
-    json_path = HISTORY_PATH / f"signals_{today}.json"
-    with open(json_path, "w") as f:
-        json.dump(signals, f, indent=2, ensure_ascii=False)
-    
-    return report
-
-def check_for_alerts(threshold_pct: float = 5.0) -> List[dict]:
-    """Check for sudden large moves that warrant immediate alert"""
-    config = load_config()
-    raw_markets = fetch_markets(limit=300)
-    relevant = filter_relevant_markets(raw_markets, config)
-    
-    alerts = []
-    for market in relevant:
-        day_change = abs((market.get("oneDayPriceChange") or 0) * 100)
-        if day_change >= threshold_pct:
-            try:
-                prices = json.loads(market.get("outcomePrices", "[]"))
-                yes_price = float(prices[0]) if prices else 0
-            except:
-                yes_price = 0
-            
-            alerts.append({
-                "question": market.get("question"),
-                "category": market.get("_category"),
-                "stocks": market.get("_affected_stocks", []),
-                "current_prob": round(yes_price * 100, 1),
-                "change": round((market.get("oneDayPriceChange") or 0) * 100, 2),
-                "volume_24h": market.get("volume24hr", 0)
-            })
-    
-    return alerts
+    report = generate_report(config)
+    print(report)
 
 if __name__ == "__main__":
-    report = generate_daily_report()
-    print(report)
+    main()
