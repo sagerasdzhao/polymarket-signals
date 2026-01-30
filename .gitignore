@@ -1,0 +1,22 @@
+# Virtual environment
+venv/
+.venv/
+
+# Data (keep structure, ignore contents)
+data/markets.db
+data/history/*.json
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db

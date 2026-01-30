@@ -1,0 +1,110 @@
+{
+  "version": "1.1",
+  "watchlist": {
+    "fed_policy": {
+      "keywords": ["fed", "fomc", "interest rate", "rate cut", "rate hike", "powell", "federal reserve"],
+      "stock_impact": {
+        "bullish_on_cut": ["QQQ", "ARKK", "TLT", "XLK"],
+        "bearish_on_cut": ["XLF", "KRE"],
+        "notes": "Fed rate cuts → risk-on, growth stocks benefit"
+      }
+    },
+    "tariffs_trade": {
+      "keywords": ["tariff", "china trade", "trade war", "import tax", "trade deal", "trade policy"],
+      "stock_impact": {
+        "bearish": ["BABA", "JD", "PDD", "NIO", "XPEV", "AAPL"],
+        "bullish": ["domestic manufacturers"],
+        "notes": "Higher tariffs → pressure on China-exposed names"
+      }
+    },
+    "tiktok": {
+      "keywords": ["tiktok", "bytedance", "tiktok ban"],
+      "stock_impact": {
+        "bullish_on_ban": ["META", "SNAP", "GOOG", "PINS"],
+        "notes": "TikTok ban → ad spend shifts to competitors"
+      }
+    },
+    "ai_regulation": {
+      "keywords": ["ai regulation", "artificial intelligence", "ai safety", "ai bill", "ai policy"],
+      "stock_impact": {
+        "bearish": ["NVDA", "MSFT", "GOOG", "META", "AMD"],
+        "notes": "Heavy regulation → slower AI deployment"
+      }
+    },
+    "antitrust": {
+      "keywords": ["antitrust", "monopoly", "breakup", "doj", "ftc", "google breakup", "apple antitrust"],
+      "stock_impact": {
+        "targets": ["GOOG", "META", "AAPL", "AMZN", "MSFT"],
+        "notes": "Breakup risk → valuation compression"
+      }
+    },
+    "recession": {
+      "keywords": ["recession", "economic downturn", "gdp contraction", "soft landing", "hard landing"],
+      "stock_impact": {
+        "bearish": ["XLY", "XLI", "IWM"],
+        "bullish": ["XLP", "XLU", "GLD", "TLT"],
+        "notes": "Recession → flight to safety"
+      }
+    },
+    "government_shutdown": {
+      "keywords": ["shutdown", "government shutdown", "debt ceiling", "debt limit"],
+      "stock_impact": {
+        "bearish_short_term": ["LMT", "RTX", "GD", "NOC"],
+        "notes": "Shutdown delays contracts, temporary headwind"
+      }
+    },
+    "crypto_bitcoin": {
+      "keywords": ["bitcoin", "crypto", "btc", "ethereum", "eth", "microstrategy", "mstr", "coinbase"],
+      "stock_impact": {
+        "correlated": ["COIN", "MSTR", "RIOT", "MARA", "BITO"],
+        "notes": "Crypto sentiment drives correlated equities"
+      }
+    },
+    "tech_companies": {
+      "keywords": ["apple", "microsoft", "google", "amazon", "meta", "nvidia", "tesla", "openai"],
+      "stock_impact": {
+        "direct": ["AAPL", "MSFT", "GOOG", "AMZN", "META", "NVDA", "TSLA"],
+        "notes": "Company-specific news"
+      }
+    },
+    "geopolitical": {
+      "keywords": ["taiwan", "ukraine", "russia", "israel", "iran", "war", "conflict", "invasion", "military"],
+      "stock_impact": {
+        "bullish_on_conflict": ["LMT", "RTX", "NOC", "XLE", "USO"],
+        "bearish_on_conflict": ["TSM", "AMD", "INTC"],
+        "notes": "Geopolitical risk → defense & energy up, semis down"
+      }
+    },
+    "trump_policy": {
+      "keywords": ["trump", "deportation", "immigration", "executive order", "trump tariff", "trump policy"],
+      "stock_impact": {
+        "varies": ["GEO", "CXW", "CAT", "DE"],
+        "notes": "Policy-dependent, watch specific announcements"
+      }
+    },
+    "healthcare_pharma": {
+      "keywords": ["fda approval", "drug approval", "medicare", "medicaid", "pharma", "biotech"],
+      "stock_impact": {
+        "sector": ["XLV", "IBB", "XBI"],
+        "notes": "Regulatory outcomes drive biotech"
+      }
+    },
+    "energy_climate": {
+      "keywords": ["oil price", "opec", "climate", "ev mandate", "renewable", "natural gas", "energy"],
+      "stock_impact": {
+        "energy": ["XLE", "XOP", "USO", "OXY", "CVX"],
+        "renewables": ["TAN", "ICLN", "ENPH"],
+        "notes": "Energy policy and prices"
+      }
+    }
+  },
+  "alert_thresholds": {
+    "major_change": 5.0,
+    "notable_change": 2.0,
+    "min_volume_24h": 5000
+  },
+  "schedule": {
+    "daily_report_time": "07:30",
+    "timezone": "America/Toronto"
+  }
+}
